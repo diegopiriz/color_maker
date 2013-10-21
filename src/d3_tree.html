@@ -1,0 +1,255 @@
+<html>
+    <head>
+        <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js" ></script>
+        <script src="http://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+        <style type="text/css">
+            .node-tooltip {
+                display:none;
+            }
+            .node:hover .node-tooltip{
+                display:block;
+            }
+
+            .node circle {
+                cursor: pointer;
+                fill: #ff0000;
+                stroke: 'steelblue';
+                stroke-width: 1.5px;
+            }
+
+            .node text {
+                font-size: 12px;
+            }
+
+            .link {
+                fill: none;
+                stroke: #ccc;
+                stroke-width: 1.5px;
+            }
+
+            .hidden {
+                display: none;
+            }
+
+            div {
+                border: 1px dashed black;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- <textarea rows="4" cols="150">Paste you json here</textarea> -->
+        <div id="tree"></div>
+        <p id="messages" class="hidden"></p>
+        <script type="text/javascript">
+            var convert_to_tree = function(json, max_deep) {
+                var find_in_list = function(name, list) {
+                    for(var i=0; i<list.length; i++) {
+                        if (list[i].name == name) {
+                            return list[i];
+                        }
+                    }
+                    return null;
+                };
+                max_deep = max_deep || 3;
+
+                if (!json || !json.data || json.data.length != 1) {
+                    return null;
+                }
+                var kpi_name = json.data[0].label;
+                json = json.data[0].data;
+                var result = {
+                    name: kpi_name,
+                    children: [],
+                    value: 0,
+                    count: 0,
+                };
+                for(var i=0; i<json.length; i++) {
+                    var subtree = result.children;
+                    var data_element = json[i];
+                    data_element[0].push('Sem interação previa');
+                    for (var j=0; j<Math.min(data_element[0].length, max_deep); j++) {
+                        var feature = data_element[0][j];
+                        var prev = find_in_list(feature, subtree);
+                        if (!prev) {
+                            // create new
+                            var new_e = { name: feature, children: [], value: 0, count: 0 }
+                            // I'm too lazy to insert in order, so just push and then sort
+                            subtree.push(new_e);
+                            prev = new_e;
+                        }
+                        prev.value += data_element[1];
+                        prev.count++;
+                        subtree.sort(function(a,b){
+                            return b.value - a.value;
+                        });
+                        subtree = prev.children;
+                    }
+                    // add to the root node
+                    result.value += data_element[1];
+                    result.count++;
+                }
+                return result;
+            };
+
+            function toggle(d) {
+                if (d.children) {
+                    d._children = d.children;
+                    d.children = null;
+                } else {
+                    d.children = d._children;
+                    d._children = null;
+                }
+            };
+
+            function subtree_depth(tree) {
+                var depth = 0;
+                var children = tree.children || tree._children || [];
+                for(var i=0; i<children.length; i++) {
+                    depth = Math.max(depth, subtree_depth(children[i]) + 1);
+                }
+                return depth;
+            };
+
+function update(root_node, svg, opts) {
+    var o = opts.orientation;
+    // create the tree layout
+    var tree = d3.layout.tree().size(o.size);
+    //var diagonal = d3.svg.diagonal().projection(function(d) { return [o.x(d), o.y(d)]; });
+    // compute the new tree layout
+    var nodes = tree.nodes(root_node);
+    var links = tree.links(nodes);
+
+    tree_depth = subtree_depth(root_node);
+    // fixed width
+    nodes.forEach(function(d) {
+        d.y = d.depth * (o.size[1] / tree_depth);
+    });
+
+    // scale for node size
+    var max_node_size = opts.max_node_size || (d3.min(o.size) / 15);
+    var min_node_size = opts.min_node_size || (d3.min(o.size) / 80);
+
+    var min_tree_value = Math.sqrt(d3.min(nodes, function(d) { return d.value; }));
+    var max_tree_value = Math.sqrt(d3.max(nodes, function(d) { return d.value; }));
+
+    var node_size_scale = d3.scale.linear()
+                                    .domain([min_tree_value, max_tree_value])
+                                    .range([min_node_size, max_node_size]);
+
+    // scale for node color
+    var node_color_scale = d3.scale.category10();
+
+    //////////////////////////////////////////////////////////////////////////////
+    // NODES
+    //////////////////////////////////////////////////////////////////////////////
+    //id function (for nodes)
+    var node_id = function(d) {
+        return d.id || (d.id = d.parent ? node_id(d.parent) + " - " + d.name : d.name);
+    }
+    var node = svg.selectAll('.node').data(nodes, node_id);
+    // NODES ENTER
+    node.enter()
+        .append('circle')
+        .attr('class', 'node')
+        .attr('cx',   function(d) { return o.x(opts.click || root_node); })
+        .attr('cy',   function(d) { return o.y(opts.click || root_node); })
+        .attr('r',    function(d) { return node_size_scale(Math.sqrt(d.value)); })
+        .attr('fill', function(d) { return node_color_scale(d.name); })
+        .on('click', function(d){
+            toggle(d);
+            opts.source = d;
+            opts.click = {x: d.x, y: d.y};
+            update(root_node, svg, opts);
+        });
+
+    // NODES UPDATE
+    node.transition()
+        .attr('cx', function(d) { return o.x(d); })
+        .attr('cy', function(d) { return o.y(d); })
+        //.attr('fill', get_node_color)
+
+    // NODES EXIT
+    node.exit()
+        .transition()
+        .duration(opts.duration || 500)
+            .attr('cx', function(d) { return o.x(opts.source); })
+            .attr('cy', function(d) { return o.y(opts.source); })
+        .remove();
+
+    //////////////////////////////////////////////////////////////////////////////
+    // LINKS
+    //////////////////////////////////////////////////////////////////////////////
+    // var link_id = function(d) {
+    //     return d.id || (d.id = node_id(d.source) + ' -> ' + node_id(d.target));
+    // }
+    // var link = svg.selectAll('.link').data(links, link_id);
+    // // LINKS ENTER
+    // link.enter()
+    //     .append('path')
+    //     .attr('class', '.link')
+
+    // LINKS UPDATE
+
+    // LINKS EXIT
+
+};
+
+            function draw_me_a_tree(root_node, opts) {
+                console.log("DRAW TREE");
+                opts = opts || {};
+                //sizes
+                var margin = opts.margin || {top: 20, right: 20, bottom: 20, left: 20};
+                var width = (opts.width || 600) - margin.left - margin.right;
+                var height = (opts.height || 500) - margin.top - margin.bottom;
+                // tree orientation
+                var orientations = {
+                    "top-to-bottom": {
+                        size: [width, height],
+                        x: function(d) { return d.x; },
+                        y: function(d) { return d.y; }
+                    },
+                    "right-to-left": {
+                        size: [height, width],
+                        x: function(d) { return width - d.y; },
+                        y: function(d) { return d.x; }
+                    },
+                    "bottom-to-top": {
+                        size: [width, height],
+                        x: function(d) { return d.x; },
+                        y: function(d) { return height - d.y; }
+                    },
+                    "left-to-right": {
+                        size: [height, width],
+                        x: function(d) { return d.y; },
+                        y: function(d) { return d.x; }
+                    }
+                };
+                opts.orientation = orientations[opts.orientation || "left-to-right"];
+
+                var svg = d3.select("#tree")
+                            .append("svg:svg")
+                              .attr("width", width + margin.right + margin.left)
+                              .attr("height", height + margin.top + margin.bottom)
+                              .append("svg:g")
+                                .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+                update(root_node, svg, opts);
+            };
+
+
+            json = {"data":[{"label":"Vendas geradas","data":[[["Mais populares","Mais populares"],8694.92],[["Relacionados","Complementares","Complementares","Complementares","Relacionados"],1844.1],[["Visualizados"],836926.87],[["Visualizados","Gôndola"],311.40999999999997],[["Mais populares","Visualizados"],3103.8],[["Complementares","Complementares","Complementares"],19360.179999999993],[["Relacionados","Preferidos","Preferidos"],2054.32],[["Visualizados","Relacionados"],16600.29],[["Mais populares","Mais populares","Visualizados"],1884.1100000000001],[["Comprados","Visualizados","Visualizados"],6954.629999999999],[["Relacionados"],354628.9500000001],[["Comprados"],249212.15000000002],[["Visualizados","Visualizados","Visualizados"],60657.11000000001],[["Complementares","Preferidos","Preferidos"],3286.7200000000003],[["Relacionados","Relacionados","Relacionados"],12159.91],[["Comprados","Comprados","Comprados"],16427.369999999995],[["Complementares","Visualizados","Complementares","Relacionados"],69.26],[["Visualizados","Visualizados","Visualizados","Visualizados"],16741.81],[["Comprados","Comprados","Visualizados"],25579.26],[["Preferidos","Complementares"],10620.939999999999],[["Complementares","Visualizados","Complementares"],649.0],[["Comprados","Visualizados","Visualizados","Visualizados"],4721.2],[["Preferidos","Relacionados","Preferidos"],4970.0],[["Visualizados","Relacionados","Visualizados","Visualizados","Visualizados"],779.38],[["Complementares","Gôndola"],1555.84],[["Preferidos","Comprados","Visualizados"],499.0],[["Gôndola","Gôndola","Gôndola"],819.0399999999998],[["Preferidos","Complementares","Complementares","Complementares"],199.0],[["Comprados","Comprados"],66942.74000000002],[["Preferidos","Preferidos","Preferidos"],17263.329999999998],[["Gôndola","Gôndola"],7680.95],[["Complementares","Complementares"],74845.41000000002],[["Complementares","Visualizados","Visualizados"],6133.12],[["Visualizados","Visualizados","Comprados","Comprados"],798.0],[["Comprados","Complementares","Preferidos","Preferidos"],649.0],[["Relacionados","Relacionados","Visualizados"],166.8],[["Visualizados","Visualizados","Complementares"],171.36],[["Gôndola"],78831.65999999997],[["Complementares"],297054.38],[["Preferidos","Preferidos","Visualizados","Preferidos","Preferidos"],529.0],[["Relacionados","Relacionados","Relacionados","Relacionados","Visualizados"],442.73],[["Comprados","Complementares","Complementares"],2289.95],[["Comprados","Comprados","Preferidos"],5502.919999999999],[["Comprados","Visualizados","Preferidos"],2669.9],[["Preferidos"],425249.1700000001],[["Comprados","Visualizados"],50112.68000000002],[["Complementares","Complementares","Preferidos","Preferidos","Relacionados"],2008.98],[["Visualizados","Complementares","Complementares"],1878.9],[["Complementares","Preferidos"],16179.72],[["Complementares","Relacionados","Relacionados","Complementares","Relacionados"],219.9],[["Visualizados","Comprados","Comprados","Visualizados"],1580.9099999999999],[["Comprados","Complementares"],12774.529999999999],[["Complementares","Relacionados"],6174.7],[["Mais populares","Gôndola"],852.9],[["Relacionados","Relacionados","Preferidos","Preferidos","Relacionados","Relacionados"],878.0],[["Comprados","Comprados","Visualizados","Comprados"],2195.1],[["Relacionados","Relacionados","Preferidos","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados"],354.9],[["Relacionados","Relacionados","Preferidos","Preferidos","Relacionados"],2885.4],[["Preferidos","Relacionados"],24775.64],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],14324.690000000002],[["Preferidos","Preferidos"],61691.15000000001],[["Relacionados","Preferidos","Relacionados"],1877.97],[["Visualizados","Visualizados","Preferidos"],9499.63],[["Visualizados","Visualizados"],244417.46999999997],[["Preferidos","Preferidos","Relacionados"],3717.24],[["Visualizados","Relacionados","Relacionados"],1858.9099999999999],[["Complementares","Complementares","Complementares","Complementares","Preferidos","Preferidos"],499.0],[["Gôndola","Comprados"],682.6199999999999],[["Complementares","Complementares","Complementares","Complementares"],10899.150000000001],[["Visualizados","Mais populares"],3726.6],[["Visualizados","Visualizados","Mais populares"],257.62],[["Comprados","Gôndola"],1227.1399999999999],[["Visualizados","Comprados","Comprados"],3667.8],[["Complementares","Complementares","Gôndola"],414.69],[["Complementares","Complementares","Preferidos","Preferidos"],597.41],[["Complementares","Complementares","Visualizados","Preferidos"],99.9],[["Complementares","Complementares","Comprados","Complementares","Complementares","Complementares","Complementares"],97.0],[["Complementares","Complementares","Complementares","Complementares","Complementares"],2925.89],[["Relacionados","Visualizados","Visualizados"],1838.5100000000002],[["Complementares","Complementares","Complementares","Relacionados","Complementares","Preferidos"],218.4],[["Visualizados","Visualizados","Preferidos","Visualizados","Visualizados"],4727.3],[["Visualizados","Visualizados","Preferidos","Preferidos"],148.9],[["Gôndola","Visualizados"],1398.92],[["Visualizados","Preferidos","Visualizados","Visualizados","Visualizados"],649.0],[["Preferidos","Visualizados","Visualizados"],7760.13],[["Preferidos","Visualizados","Preferidos"],335.84],[["Preferidos","Relacionados","Visualizados"],1089.8],[["Comprados","Comprados","Comprados","Comprados"],4485.290000000001],[["Comprados","Mais populares"],1336.6100000000001],[["Relacionados","Relacionados","Preferidos"],5889.03],[["Comprados","Preferidos","Preferidos"],5761.0],[["Preferidos","Relacionados","Relacionados"],1456.9],[["Visualizados","Preferidos","Visualizados","Visualizados","Visualizados","Visualizados"],988.2],[["Preferidos","Visualizados"],22192.37],[["Relacionados","Preferidos"],20807.269999999997],[["Relacionados","Visualizados","Relacionados"],1343.78],[["Comprados","Comprados","Comprados","Comprados","Relacionados","Comprados"],1528.2],[["Gôndola","Complementares","Relacionados"],140.0],[["Relacionados","Visualizados"],4870.1900000000005],[["Complementares","Complementares","Complementares","Preferidos"],38.61],[["Preferidos","Preferidos","Preferidos","Preferidos","Relacionados"],299.0],[["Visualizados","Preferidos","Preferidos","Preferidos","Visualizados","Visualizados","Visualizados"],259.0],[["Relacionados","Comprados"],734.81],[["Gôndola","Gôndola","Gôndola","Gôndola"],68.60000000000001],[["Visualizados","Preferidos","Preferidos"],3491.0999999999995],[["Visualizados","Complementares","Complementares","Complementares"],1457.9],[["Relacionados","Relacionados"],55730.88999999999],[["Comprados","Preferidos","Visualizados","Visualizados"],246.9],[["Visualizados","Comprados"],11648.83],[["Complementares","Complementares","Complementares","Complementares","Complementares","Complementares"],813.66],[["Comprados","Preferidos"],10705.410000000002],[["Preferidos","Preferidos","Preferidos","Preferidos","Relacionados","Visualizados"],718.9],[["Complementares","Complementares","Comprados","Comprados"],1298.0],[["Relacionados","Complementares","Complementares"],711.66],[["Relacionados","Relacionados","Visualizados","Visualizados","Complementares","Relacionados","Preferidos"],199.0],[["Comprados","Comprados","Visualizados","Comprados","Relacionados","Relacionados","Relacionados"],418.0],[["Visualizados","Comprados","Visualizados"],1906.0],[["Complementares","Preferidos","Preferidos","Visualizados"],119.9],[["Mais populares","Preferidos"],476.0],[["Comprados","Preferidos","Mais populares"],798.0],[["Mais populares"],31481.290000000005],[["Complementares","Relacionados","Relacionados"],1388.0],[["Complementares","Complementares","Visualizados","Visualizados","Relacionados"],978.0],[["Comprados","Comprados","Relacionados"],1244.0],[["Preferidos","Preferidos","Preferidos","Relacionados"],5154.299999999999],[["Comprados","Comprados","Gôndola"],178.31],[["Complementares","Comprados","Complementares"],1568.21],[["Comprados","Comprados","Complementares"],357.9],[["Visualizados","Comprados","Comprados","Comprados","Visualizados","Visualizados","Visualizados","Visualizados"],808.2],[["Complementares","Visualizados"],10804.550000000001],[["Complementares","Complementares","Relacionados"],855.8],[["Preferidos","Preferidos","Visualizados","Relacionados"],649.0],[["Relacionados","Preferidos","Relacionados","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos"],1464.52],[["Complementares","Complementares","Preferidos"],1137.9],[["Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos"],1768.9],[["Gôndola","Comprados","Comprados"],132.9],[["Visualizados","Preferidos","Visualizados","Visualizados"],3845.9],[["Preferidos","Relacionados","Relacionados","Relacionados","Relacionados","Preferidos","Preferidos","Preferidos","Preferidos"],658.8],[["Relacionados","Relacionados","Relacionados","Relacionados"],6832.889999999999],[["Relacionados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Relacionados"],799.0],[["Mais populares","Mais populares","Mais populares"],39.9],[["Visualizados","Comprados","Visualizados","Comprados","Complementares","Relacionados"],748.0],[["Relacionados","Relacionados","Relacionados","Relacionados","Relacionados"],1138.31],[["Preferidos","Preferidos","Visualizados"],5210.799999999999],[["Comprados","Relacionados"],10858.16],[["Mais populares","Mais populares","Preferidos","Preferidos"],1599.0],[["Preferidos","Preferidos","Preferidos","Preferidos"],6327.82],[["Visualizados","Preferidos","Preferidos","Visualizados"],396.0],[["Visualizados","Complementares"],10062.98],[["Complementares","Relacionados","Complementares"],676.9],[["Mais populares","Complementares"],798.0],[["Preferidos","Preferidos","Relacionados","Relacionados","Preferidos"],180.4],[["Relacionados","Complementares"],1905.4],[["Preferidos","Comprados","Relacionados","Preferidos"],1528.2],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],4594.0],[["Preferidos","Comprados","Comprados","Visualizados"],248.0],[["Visualizados","Visualizados","Relacionados","Preferidos","Preferidos","Visualizados","Relacionados"],439.9],[["Gôndola","Complementares"],1969.08],[["Comprados","Visualizados","Visualizados","Visualizados","Visualizados"],2700.12],[["Visualizados","Comprados","Preferidos"],2299.0],[["Complementares","Complementares","Relacionados","Preferidos"],278.0],[["Preferidos","Relacionados","Preferidos","Preferidos"],1168.2],[["Visualizados","Visualizados","Comprados"],1920.6000000000001],[["Preferidos","Comprados","Relacionados"],1997.9],[["Visualizados","Preferidos","Relacionados","Preferidos","Preferidos"],98.0],[["Complementares","Preferidos","Complementares"],3344.37],[["Complementares","Preferidos","Complementares","Complementares","Preferidos","Preferidos"],55.7],[["Complementares","Mais populares"],99.0],[["Preferidos","Comprados"],2444.1],[["Visualizados","Preferidos","Visualizados","Visualizados","Preferidos"],179.9],[["Comprados","Complementares","Visualizados"],499.0],[["Comprados","Comprados","Visualizados","Visualizados"],4878.92],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Preferidos","Preferidos"],59.9],[["Comprados","Comprados","Mais populares"],649.0],[["Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados"],323.1],[["Preferidos","Comprados","Complementares"],2788.2],[["Preferidos","Preferidos","Complementares"],1586.9],[["Visualizados","Visualizados","Visualizados","Relacionados"],3145.9],[["Preferidos","Preferidos","Relacionados","Relacionados"],2058.8199999999997],[["Complementares","Complementares","Visualizados"],1306.9],[["Complementares","Gôndola","Complementares"],19.9],[["Preferidos","Complementares","Relacionados","Relacionados","Preferidos"],59.9],[["Complementares","Comprados","Comprados","Relacionados","Visualizados","Relacionados"],1229.52],[["Comprados","Comprados","Comprados","Visualizados","Visualizados","Visualizados"],109.9],[["Visualizados","Preferidos","Visualizados","Visualizados","Visualizados","Preferidos"],788.64],[["Comprados","Comprados","Comprados","Preferidos"],1599.0],[["Visualizados","Visualizados","Comprados","Visualizados"],2906.1499999999996],[["Relacionados","Visualizados","Relacionados","Relacionados"],487.5],[["Comprados","Comprados","Mais populares","Comprados"],38.61],[["Visualizados","Visualizados","Visualizados","Preferidos","Preferidos","Visualizados","Visualizados"],1198.0],[["Complementares","Gôndola","Gôndola","Gôndola"],39.9],[["Visualizados","Preferidos","Visualizados"],4963.52],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Relacionados","Relacionados","Visualizados","Visualizados"],299.9],[["Comprados","Visualizados","Relacionados"],539.0],[["Gôndola","Relacionados"],245.6],[["Complementares","Relacionados","Comprados","Complementares","Complementares","Relacionados","Relacionados"],189.04],[["Comprados","Relacionados","Relacionados","Relacionados","Relacionados"],1558.05],[["Gôndola","Complementares","Complementares"],456.3299999999999],[["Complementares","Comprados","Complementares","Visualizados","Relacionados"],229.0],[["Complementares","Preferidos","Relacionados"],399.0],[["Visualizados","Visualizados","Preferidos","Relacionados","Preferidos"],569.9],[["Visualizados","Visualizados","Relacionados"],5507.509999999999],[["Preferidos","Preferidos","Relacionados","Visualizados","Visualizados","Visualizados","Visualizados"],68.91],[["Comprados","Comprados","Visualizados","Visualizados","Visualizados"],2459.0],[["Comprados","Relacionados","Visualizados"],898.0],[["Comprados","Comprados","Comprados","Visualizados"],3133.31],[["Complementares","Relacionados","Relacionados","Relacionados","Complementares","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Visualizados","Preferidos"],969.9],[["Comprados","Visualizados","Comprados","Comprados"],438.0],[["Visualizados","Comprados","Comprados","Comprados"],35.9],[["Comprados","Comprados","Comprados","Relacionados"],1596.0],[["Preferidos","Relacionados","Preferidos","Complementares","Visualizados"],161.7],[["Complementares","Complementares","Complementares","Complementares","Complementares","Complementares","Complementares"],41.9],[["Comprados","Comprados","Complementares","Complementares","Preferidos"],70.9],[["Complementares","Complementares","Comprados"],69.92],[["Relacionados","Relacionados","Relacionados","Visualizados"],1068.9],[["Preferidos","Comprados","Comprados"],1096.73],[["Preferidos","Complementares","Preferidos"],748.9],[["Relacionados","Relacionados","Preferidos","Relacionados"],746.9],[["Gôndola","Comprados","Gôndola"],227.85999999999999],[["Gôndola","Comprados","Gôndola","Complementares"],37.81],[["Visualizados","Visualizados","Relacionados","Relacionados"],178.9],[["Relacionados","Relacionados","Complementares","Visualizados","Visualizados","Mais populares"],271.18],[["Complementares","Complementares","Comprados","Complementares","Comprados","Comprados"],374.9],[["Comprados","Preferidos","Visualizados","Preferidos"],419.8],[["Visualizados","Preferidos"],32952.55],[["Mais populares","Comprados","Visualizados"],649.0],[["Preferidos","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados"],499.0],[["Gôndola","Preferidos","Preferidos"],769.9],[["Visualizados","Relacionados","Visualizados","Relacionados","Relacionados","Visualizados","Visualizados"],375.2],[["Preferidos","Relacionados","Relacionados","Preferidos"],116.1],[["Relacionados","Gôndola"],503.5],[["Complementares","Comprados"],1757.72],[["Complementares","Gôndola","Gôndola"],90.41],[["Comprados","Preferidos","Visualizados"],1347.0],[["Relacionados","Visualizados","Relacionados","Preferidos"],161.91],[["Visualizados","Visualizados","Comprados","Comprados","Visualizados","Visualizados"],799.0],[["Relacionados","Relacionados","Relacionados","Preferidos"],423.9],[["Visualizados","Visualizados","Preferidos","Preferidos","Preferidos","Preferidos"],114.21],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Comprados","Comprados"],63.0],[["Visualizados","Relacionados","Relacionados","Preferidos","Preferidos"],698.0],[["Visualizados","Visualizados","Visualizados","Complementares"],1999.0],[["Preferidos","Comprados","Complementares","Complementares","Complementares"],649.0],[["Comprados","Comprados","Comprados","Visualizados","Visualizados","Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Visualizados","Visualizados","Visualizados","Visualizados"],978.0],[["Gôndola","Preferidos"],122.46],[["Preferidos","Visualizados","Mais populares"],299.0],[["Gôndola","Gôndola","Preferidos"],39.99],[["Comprados","Preferidos","Preferidos","Preferidos"],801.41],[["Visualizados","Preferidos","Visualizados","Visualizados","Comprados"],329.0],[["Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados"],712.8],[["Mais populares","Comprados"],98.0],[["Relacionados","Relacionados","Preferidos","Preferidos"],602.8199999999999],[["Visualizados","Comprados","Preferidos","Visualizados"],250.2],[["Comprados","Visualizados","Comprados"],787.0],[["Comprados","Relacionados","Comprados","Complementares","Complementares","Mais populares"],229.0],[["Gôndola","Gôndola","Visualizados"],98.91],[["Visualizados","Comprados","Preferidos","Relacionados"],499.0],[["Comprados","Comprados","Visualizados","Relacionados"],1698.0],[["Comprados","Comprados","Visualizados","Visualizados","Relacionados"],17.91],[["Comprados","Visualizados","Visualizados","Preferidos","Complementares"],649.0],[["Complementares","Preferidos","Preferidos","Preferidos","Preferidos"],159.0],[["Visualizados","Preferidos","Preferidos","Visualizados","Visualizados"],2008.8],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Relacionados"],169.0],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Relacionados"],398.0],[["Visualizados","Complementares","Gôndola"],98.91],[["Comprados","Preferidos","Comprados","Comprados","Comprados","Comprados","Preferidos"],498.0],[["Comprados","Comprados","Relacionados","Preferidos"],194.9],[["Visualizados","Visualizados","Visualizados","Visualizados","Relacionados"],798.0],[["Preferidos","Preferidos","Preferidos","Preferidos","Preferidos"],3082.5],[["Preferidos","Preferidos","Preferidos","Preferidos","Visualizados"],1758.0],[["Comprados","Preferidos","Visualizados","Relacionados","Relacionados","Comprados","Visualizados","Complementares"],499.0],[["Visualizados","Visualizados","Visualizados","Comprados","Comprados","Visualizados","Visualizados","Visualizados"],398.0],[["Complementares","Complementares","Complementares","Preferidos","Complementares","Complementares","Complementares"],79.0],[["Complementares","Complementares","Complementares","Mais populares","Mais populares","Complementares","Complementares","Complementares","Complementares"],257.0],[["Visualizados","Comprados","Comprados","Comprados","Complementares","Visualizados"],1198.0],[["Complementares","Visualizados","Preferidos","Visualizados","Visualizados"],202.01],[["Visualizados","Visualizados","Relacionados","Visualizados","Relacionados","Relacionados","Visualizados"],4286.1],[["Comprados","Visualizados","Comprados","Comprados","Comprados"],799.0],[["Comprados","Preferidos","Relacionados","Relacionados","Visualizados","Visualizados","Preferidos"],1528.2],[["Comprados","Visualizados","Visualizados","Comprados","Comprados","Comprados","Visualizados","Visualizados","Visualizados","Visualizados"],1123.44],[["Complementares","Preferidos","Visualizados","Complementares","Visualizados"],1599.0],[["Visualizados","Visualizados","Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],99.8],[["Comprados","Comprados","Comprados","Comprados","Comprados","Preferidos","Visualizados","Comprados","Comprados","Complementares","Preferidos","Preferidos","Preferidos","Preferidos"],1599.0],[["Comprados","Visualizados","Visualizados","Visualizados","Comprados","Visualizados","Visualizados"],69.92],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],399.0],[["Complementares","Preferidos","Complementares","Complementares","Relacionados","Preferidos","Preferidos","Relacionados","Preferidos","Complementares","Relacionados","Complementares","Complementares","Complementares"],214.9],[["Complementares","Relacionados","Complementares","Complementares","Preferidos"],229.0],[["Complementares","Complementares","Complementares","Complementares","Visualizados","Visualizados"],484.9],[["Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos"],558.0],[["Complementares","Complementares","Complementares","Comprados","Complementares","Preferidos"],1298.0],[["Visualizados","Visualizados","Visualizados","Comprados","Complementares","Preferidos","Mais populares","Preferidos","Preferidos","Complementares","Complementares"],348.0],[["Complementares","Visualizados","Visualizados","Visualizados"],1767.0],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Preferidos"],248.9],[["Complementares","Visualizados","Visualizados","Relacionados","Relacionados"],2132.01],[["Complementares","Complementares","Relacionados","Relacionados"],691.1999999999999],[["Visualizados","Preferidos","Preferidos","Preferidos","Visualizados","Visualizados"],203.15],[["Mais populares","Visualizados","Visualizados","Complementares","Visualizados"],1299.0],[["Visualizados","Visualizados","Preferidos","Visualizados"],286.2],[["Visualizados","Visualizados","Visualizados","Comprados"],79.29],[["Visualizados","Relacionados","Visualizados","Visualizados"],1598.0],[["Comprados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],1529.1],[["Visualizados","Comprados","Comprados","Visualizados","Comprados","Comprados","Comprados","Visualizados","Complementares","Comprados"],125.8],[["Comprados","Comprados","Visualizados","Preferidos"],149.0],[["Relacionados","Preferidos","Preferidos","Relacionados","Relacionados","Relacionados"],58.9],[["Preferidos","Gôndola"],2006.9],[["Visualizados","Visualizados","Visualizados","Complementares","Visualizados","Visualizados","Preferidos"],134.82],[["Comprados","Comprados","Comprados","Comprados","Comprados"],1662.1000000000001],[["Mais populares","Relacionados"],229.0],[["Visualizados","Relacionados","Visualizados","Relacionados","Visualizados","Relacionados","Visualizados","Relacionados"],152.81],[["Comprados","Comprados","Visualizados","Comprados","Comprados"],119.9],[["Preferidos","Preferidos","Relacionados","Gôndola","Gôndola","Preferidos","Preferidos","Relacionados","Relacionados","Relacionados"],369.9],[["Visualizados","Comprados","Comprados","Comprados","Comprados","Visualizados","Visualizados"],159.3],[["Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Gôndola","Visualizados"],649.0],[["Complementares","Preferidos","Complementares","Preferidos","Preferidos"],1909.7399999999998],[["Visualizados","Visualizados","Preferidos","Relacionados"],399.9],[["Visualizados","Preferidos","Relacionados","Visualizados","Relacionados","Preferidos"],1123.2],[["Visualizados","Visualizados","Visualizados","Preferidos","Preferidos","Visualizados","Visualizados","Preferidos","Complementares","Complementares","Preferidos","Preferidos","Relacionados","Relacionados"],119.0],[["Preferidos","Visualizados","Relacionados"],2707.92],[["Comprados","Comprados","Comprados","Comprados","Visualizados"],5794.0],[["Mais populares","Complementares","Complementares"],299.0],[["Visualizados","Preferidos","Preferidos","Complementares"],598.0],[["Preferidos","Preferidos","Relacionados","Preferidos","Preferidos"],1099.0],[["Comprados","Preferidos","Preferidos","Preferidos","Preferidos"],178.0],[["Gôndola","Mais populares","Comprados","Comprados"],1596.0],[["Relacionados","Complementares","Preferidos","Preferidos","Complementares","Relacionados","Relacionados"],469.9],[["Complementares","Complementares","Visualizados","Visualizados"],79.8],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],1078.2],[["Visualizados","Visualizados","Comprados","Visualizados","Complementares"],101.69999999999999],[["Comprados","Preferidos","Preferidos","Relacionados"],1298.0],[["Comprados","Comprados","Comprados","Comprados","Comprados","Comprados"],456.29999999999995],[["Visualizados","Visualizados","Visualizados","Preferidos"],661.1],[["Comprados","Visualizados","Visualizados","Comprados"],136.8],[["Relacionados","Relacionados","Complementares","Relacionados"],740.61],[["Visualizados","Comprados","Visualizados","Visualizados"],1048.0],[["Visualizados","Comprados","Comprados","Comprados","Comprados","Comprados"],159.9],[["Relacionados","Relacionados","Mais populares"],107.1],[["Visualizados","Visualizados","Comprados","Visualizados","Comprados","Visualizados","Comprados","Comprados","Preferidos","Visualizados","Visualizados"],261.32],[["Visualizados","Preferidos","Relacionados"],189.04999999999998],[["Visualizados","Visualizados","Visualizados","Relacionados","Relacionados","Visualizados","Relacionados","Visualizados","Relacionados"],79.9],[["Comprados","Comprados","Comprados","Mais populares","Comprados","Visualizados"],249.0],[["Comprados","Comprados","Preferidos","Preferidos","Preferidos"],1299.0],[["Preferidos","Preferidos","Comprados","Comprados","Complementares","Complementares","Preferidos","Preferidos","Comprados","Comprados"],978.0],[["Comprados","Mais populares","Visualizados"],229.0],[["Visualizados","Complementares","Relacionados"],20.9],[["Complementares","Complementares","Complementares","Visualizados"],14.9],[["Visualizados","Relacionados","Relacionados","Relacionados","Preferidos","Preferidos"],699.0],[["Relacionados","Preferidos","Preferidos","Relacionados","Preferidos"],79.91],[["Preferidos","Complementares","Visualizados","Visualizados","Visualizados","Preferidos"],769.9],[["Complementares","Visualizados","Visualizados","Complementares","Visualizados","Comprados","Complementares","Visualizados","Visualizados","Complementares","Visualizados"],269.9],[["Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos","Preferidos"],1665.91],[["Relacionados","Visualizados","Preferidos"],1078.2],[["Visualizados","Complementares","Preferidos","Preferidos"],277.0],[["Comprados","Gôndola","Relacionados"],340.2],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],2548.0],[["Preferidos","Complementares","Complementares"],35.91],[["Visualizados","Preferidos","Preferidos","Preferidos","Preferidos"],289.9],[["Complementares","Preferidos","Complementares","Complementares","Complementares","Complementares","Preferidos"],68.9],[["Mais populares","Visualizados","Relacionados","Preferidos"],75.51],[["Visualizados","Visualizados","Preferidos","Preferidos","Preferidos","Preferidos","Relacionados"],1198.0],[["Visualizados","Preferidos","Preferidos","Preferidos"],32.83],[["Preferidos","Visualizados","Preferidos","Preferidos","Relacionados"],1978.2],[["Gôndola","Gôndola","Gôndola","Gôndola","Gôndola"],59.8],[["Comprados","Visualizados","Comprados","Comprados","Comprados","Visualizados"],197.1],[["Visualizados","Visualizados","Relacionados","Visualizados","Preferidos"],808.2],[["Preferidos","Relacionados","Relacionados","Relacionados"],1330.2],[["Complementares","Visualizados","Preferidos","Preferidos"],499.0],[["Complementares","Complementares","Comprados","Complementares","Visualizados"],1599.0],[["Visualizados","Preferidos","Preferidos","Relacionados"],169.1],[["Visualizados","Complementares","Complementares","Relacionados","Visualizados","Preferidos","Relacionados"],388.0],[["Gôndola","Comprados","Comprados","Visualizados","Visualizados","Visualizados","Visualizados"],62.1],[["Visualizados","Visualizados","Preferidos","Preferidos","Relacionados"],98.0],[["Preferidos","Visualizados","Visualizados","Preferidos","Preferidos"],565.2],[["Preferidos","Visualizados","Visualizados","Preferidos"],179.91],[["Gôndola","Gôndola","Comprados","Comprados","Gôndola"],34.9],[["Comprados","Comprados","Visualizados","Visualizados","Visualizados","Visualizados"],1798.0],[["Complementares","Complementares","Preferidos","Relacionados","Relacionados"],941.4],[["Preferidos","Preferidos","Comprados","Comprados","Relacionados","Comprados"],629.1],[["Gôndola","Complementares","Complementares","Complementares"],199.0],[["Complementares","Gôndola","Complementares","Complementares","Complementares","Complementares"],629.9],[["Preferidos","Relacionados","Complementares","Relacionados"],11.9],[["Complementares","Comprados","Comprados","Complementares"],1295.0],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Relacionados","Relacionados"],448.2],[["Comprados","Visualizados","Comprados","Visualizados"],269.61],[["Comprados","Comprados","Comprados","Visualizados","Visualizados"],2971.8199999999997],[["Complementares","Comprados","Complementares","Comprados"],1599.0],[["Visualizados","Visualizados","Comprados","Relacionados"],105.9],[["Visualizados","Visualizados","Visualizados","Preferidos","Preferidos","Visualizados","Preferidos"],229.0],[["Visualizados","Comprados","Relacionados"],2757.1],[["Mais populares","Visualizados","Comprados","Visualizados"],55.7],[["Preferidos","Relacionados","Preferidos","Relacionados"],169.9],[["Preferidos","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Complementares"],388.0],[["Complementares","Visualizados","Complementares","Visualizados"],229.0],[["Mais populares","Mais populares","Mais populares","Mais populares","Mais populares"],388.0],[["Visualizados","Visualizados","Relacionados","Relacionados","Visualizados","Relacionados"],740.61],[["Complementares","Relacionados","Comprados","Complementares","Relacionados","Relacionados"],499.0],[["Complementares","Comprados","Visualizados","Visualizados","Visualizados"],238.0],[["Relacionados","Visualizados","Visualizados","Relacionados"],740.8],[["Comprados","Comprados","Comprados","Comprados","Comprados","Visualizados"],398.0],[["Complementares","Comprados","Complementares","Complementares","Visualizados","Preferidos"],413.6],[["Preferidos","Complementares","Complementares","Complementares","Complementares"],252.1],[["Comprados","Comprados","Comprados","Relacionados","Complementares","Complementares"],569.0],[["Visualizados","Complementares","Preferidos"],159.9],[["Relacionados","Relacionados","Relacionados","Preferidos","Relacionados","Preferidos","Relacionados","Relacionados","Relacionados","Relacionados","Relacionados","Preferidos"],179.1],[["Comprados","Visualizados","Complementares"],287.8],[["Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados","Visualizados"],241.2],[["Complementares","Complementares","Complementares","Gôndola"],35.91],[["Complementares","Relacionados","Complementares","Preferidos","Relacionados","Complementares","Relacionados","Relacionados"],2041.29],[["Visualizados","Visualizados","Visualizados","Visualizados","Comprados","Comprados"],1299.0],[["Comprados","Comprados","Complementares","Complementares"],818.6999999999999],[["Preferidos","Relacionados","Relacionados","Preferidos","Preferidos","Relacionados"],736.11],[["Comprados","Preferidos","Relacionados","Preferidos"],259.8],[["Complementares","Relacionados","Complementares","Complementares","Complementares"],44.18],[["Complementares","Comprados","Comprados"],649.0],[["Comprados","Gôndola","Comprados"],35.91],[["Comprados","Gôndola","Gôndola"],299.0],[["Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Visualizados","Visualizados","Preferidos"],1599.0],[["Visualizados","Relacionados","Visualizados","Visualizados","Visualizados","Relacionados","Relacionados"],5849.1],[["Complementares","Preferidos","Preferidos","Complementares","Complementares","Preferidos"],2429.1],[["Complementares","Comprados","Visualizados","Visualizados"],776.0],[["Comprados","Complementares","Complementares","Complementares"],71.82],[["Complementares","Visualizados","Comprados"],111.82000000000001],[["Visualizados","Visualizados","Relacionados","Preferidos","Relacionados","Relacionados","Relacionados"],33.9],[["Relacionados","Relacionados","Visualizados","Visualizados","Relacionados"],245.1],[["Complementares","Preferidos","Visualizados","Complementares"],59.9],[["Complementares","Preferidos","Preferidos","Preferidos","Complementares"],14.08],[["Visualizados","Visualizados","Visualizados","Preferidos","Visualizados","Visualizados","Visualizados","Visualizados","Preferidos","Preferidos","Preferidos","Preferidos"],1599.0],[["Comprados","Comprados","Complementares","Complementares","Complementares","Complementares"],189.9],[["Preferidos","Visualizados","Preferidos","Visualizados","Preferidos"],275.94],[["Relacionados","Preferidos","Complementares"],134.1],[["Complementares","Visualizados","Visualizados","Preferidos"],1579.0],[["Gôndola","Comprados","Comprados","Gôndola"],34.9],[["Visualizados","Relacionados","Preferidos"],299.9],[["Visualizados","Relacionados","Visualizados","Visualizados","Visualizados","Visualizados","Relacionados","Relacionados","Relacionados"],80.94],[["Comprados","Comprados","Complementares","Complementares","Mais populares"],159.0],[["Comprados","Visualizados","Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Comprados","Visualizados"],539.0],[["Visualizados","Visualizados","Relacionados","Preferidos","Visualizados","Preferidos","Visualizados","Relacionados"],159.9],[["Visualizados","Preferidos","Preferidos","Visualizados","Preferidos","Preferidos","Relacionados"],538.2],[["Complementares","Complementares","Complementares","Visualizados","Complementares"],1299.0],[["Gôndola","Complementares","Complementares","Complementares","Gôndola"],14.9],[["Relacionados","Preferidos","Preferidos","Preferidos","Relacionados","Relacionados","Relacionados","Preferidos","Relacionados"],576.28],[["Comprados","Comprados","Visualizados","Complementares","Preferidos"],292.81],[["Comprados","Comprados","Gôndola","Complementares"],35.82],[["Relacionados","Preferidos","Visualizados"],849.9],[["Complementares","Complementares","Complementares","Relacionados"],109.9],[["Mais populares","Comprados","Comprados","Visualizados","Visualizados","Mais populares","Visualizados","Mais populares","Mais populares"],277.0],[["Visualizados","Mais populares","Visualizados"],198.0],[["Preferidos","Preferidos","Relacionados","Relacionados","Preferidos","Preferidos","Relacionados"],5504.4],[["Comprados","Visualizados","Relacionados","Relacionados"],799.0],[["Visualizados","Visualizados","Visualizados","Visualizados","Complementares","Visualizados"],71.9]],"total":3698259.509999986,"is_mean":false,"mode":"currency"}]};
+            if (!json) {
+                var url = "http://localhost:3000/v2/kpi/onsite/sales.charts?from=2013-10-15&to=2013-10-17&client=walmart&categories_type=active&by=fcp";
+                d3.json(url, function(error, json){
+                    if (error) {
+                        $("#messages").text(error);
+                        $("#messages").removeClass("hidden");
+                        return;
+                    }
+                });
+            }
+            json = convert_to_tree(json);
+            draw_me_a_tree(json, {});
+        </script>
+    </body>
+</html>
